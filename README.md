@@ -15,7 +15,7 @@ ordinary business events in PostgreSQL.
 
 ## Prerequisites
 
-- Node.js 22 or newer
+- Node.js >=22.12.0
 - npm
 - Docker Engine with the Docker Compose plugin
 
@@ -136,8 +136,15 @@ Successful requests return HTTP 201 with the persisted event:
 Run the tests after PostgreSQL is running and migrations have been applied:
 
 ```sh
+docker compose up -d postgres
+docker compose exec postgres createdb -U receiver receiver_test
+PGDATABASE=receiver_test npm run db:migrate
 npm test
 ```
+
+Tests always target the dedicated `receiver_test` database. Their destructive
+cleanup refuses to run against another database. The `createdb` command is
+needed once for a fresh PostgreSQL instance.
 
 Other checks:
 

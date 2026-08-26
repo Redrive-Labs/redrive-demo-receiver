@@ -12,7 +12,7 @@ export function createApp(): Express {
   const app = express();
 
   app.disable("x-powered-by");
-  app.use(express.json());
+  app.use(express.json({ limit: "100kb" }));
   app.use("/health", createHealthRouter());
   app.use("/events", createEventsRouter());
 
@@ -35,6 +35,13 @@ export function createApp(): Express {
       return;
     }
 
+    if (isPayloadTooLargeError(error)) {
+      response.status(413).json({
+        error: "Request body too large",
+      });
+      return;
+    }
+
     console.error("Unhandled application error", error);
     response.status(500).json({
       error: "Internal server error",
@@ -52,5 +59,14 @@ function isJsonParseError(error: unknown): boolean {
     error !== null &&
     "type" in error &&
     error.type === "entity.parse.failed"
+  );
+}
+
+function isPayloadTooLargeError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "type" in error &&
+    error.type === "entity.too.large"
   );
 }

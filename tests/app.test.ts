@@ -8,11 +8,14 @@ import {
   vi,
 } from "vitest";
 import { createApp } from "../src/app";
+import { config } from "../src/config";
 import { closeDatabase, pool } from "../src/db";
+import { assertTestDatabase } from "./test-database";
 
 const app = createApp();
 
 beforeEach(async () => {
+  assertTestDatabase(config.database.database);
   await pool.query("TRUNCATE TABLE business_events RESTART IDENTITY");
 });
 
@@ -96,6 +99,30 @@ describe("POST /events", () => {
     expect(response.body).toEqual({
       error:
         "externalRef must be a non-empty string of 255 characters or fewer",
+    });
+  });
+
+  it("returns 400 for malformed JSON", async () => {
+    const response = await request(app)
+      .post("/events")
+      .set("Content-Type", "application/json")
+      .send('{"externalRef":');
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({
+      error: "Invalid JSON body",
+    });
+  });
+
+  it("returns 413 when the JSON body exceeds the parser limit", async () => {
+    const response = await request(app)
+      .post("/events")
+      .set("Content-Type", "application/json")
+      .send({ externalRef: "x".repeat(101 * 1024) });
+
+    expect(response.status).toBe(413);
+    expect(response.body).toEqual({
+      error: "Request body too large",
     });
   });
 });

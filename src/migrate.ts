@@ -2,14 +2,23 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { closeDatabase, pool } from "./db";
 
+const MIGRATION_LOCK_KEY = 2026001;
+
 async function runMigrations(): Promise<void> {
   const migrationsDirectory = path.resolve(__dirname, "..", "migrations");
-  const migrationFiles = (await readdir(migrationsDirectory))
-    .filter((fileName) => fileName.endsWith(".sql"))
-    .sort();
   const client = await pool.connect();
+  let lockAcquired = false;
 
   try {
+    await client.query("SELECT pg_advisory_lock($1::bigint)", [
+      MIGRATION_LOCK_KEY,
+    ]);
+    lockAcquired = true;
+
+    const migrationFiles = (await readdir(migrationsDirectory))
+      .filter((fileName) => fileName.endsWith(".sql"))
+      .sort();
+
     await client.query(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
         filename TEXT PRIMARY KEY,
@@ -47,7 +56,15 @@ async function runMigrations(): Promise<void> {
       }
     }
   } finally {
-    client.release();
+    try {
+      if (lockAcquired) {
+        await client.query("SELECT pg_advisory_unlock($1::bigint)", [
+          MIGRATION_LOCK_KEY,
+        ]);
+      }
+    } finally {
+      client.release();
+    }
   }
 }
 
