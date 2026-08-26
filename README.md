@@ -33,10 +33,11 @@ Copy the example configuration for local, non-Compose commands:
 cp .env.example .env
 ```
 
-The service reads `PORT`, `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, and
-`PGDATABASE`. The example values expect PostgreSQL to be available on the
-local machine at port 5432. The Compose application receives its own
-container-network values from `compose.yaml`.
+The service reads `PORT`, `WEBHOOK_SECRET`, `PGHOST`, `PGPORT`, `PGUSER`,
+`PGPASSWORD`, and `PGDATABASE`. `WEBHOOK_SECRET` must match the secret used to
+sign GitHub webhook requests. The example values expect PostgreSQL to be
+available on the local machine at port 5432. The Compose application receives
+its own container-network values from `compose.yaml`.
 
 ## Run with Docker Compose
 
@@ -105,6 +106,20 @@ Returns HTTP 200 and checks PostgreSQL with a lightweight query:
 
 If PostgreSQL cannot be queried, the endpoint returns HTTP 503 and does not
 report the database as healthy.
+
+### GitHub webhook
+
+```http
+POST /webhooks/github
+Content-Type: application/json
+X-Hub-Signature-256: sha256=<HMAC-SHA256 hex digest>
+X-GitHub-Delivery: <delivery ID>
+```
+
+The request body is verified using the exact received bytes before the
+authenticated JSON payload is processed. A valid request records one
+`business_events` row using the delivery ID as its opaque external reference
+and returns HTTP 201.
 
 ### Create an event
 

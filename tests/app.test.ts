@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import request from "supertest";
 import {
   afterAll,
@@ -13,6 +14,29 @@ import { closeDatabase, pool } from "../src/db";
 import { assertTestDatabase } from "./test-database";
 
 const app = createApp();
+
+function sign(body: Buffer): string {
+  return `sha256=${createHmac("sha256", config.webhookSecret)
+    .update(body)
+    .digest("hex")}`;
+}
+
+async function readBusinessEvents(): Promise<
+  Array<{ id: number; external_ref: string }>
+> {
+  const result = await pool.query<{
+    id: number;
+    external_ref: string;
+  }>(
+    `
+      SELECT id, external_ref
+      FROM business_events
+      ORDER BY id
+    `,
+  );
+
+  return result.rows;
+}
 
 beforeEach(async () => {
   assertTestDatabase(config.database.database);
@@ -124,5 +148,154 @@ describe("POST /events", () => {
     expect(response.body).toEqual({
       error: "Request body too large",
     });
+  });
+});
+
+describe("POST /webhooks/github", () => {
+  it("persists one event for a correctly signed request", async () => {
+    const body = Buffer.from(
+      '{"action":"opened","repository":{"full_name":"octo/example"}}',
+      "utf8",
+    );
+    const deliveryId = "90071992547409931234567890";
+
+    const response = await request(app)
+      .post("/webhooks/github")
+      .set("Content-Type", "application/json")
+      .set("X-Hub-Signature-256", sign(body))
+      .set("X-GitHub-Delivery", deliveryId)
+      .send(body.toString("utf8"));
+
+    expect(response.status).toBe(201);
+    expect(response.body).toMatchObject({
+      id: 1,
+      externalRef: deliveryId,
+      createdAt: expect.any(String),
+    });
+    await expect(readBusinessEvents()).resolves.toEqual([
+      {
+        id: 1,
+        external_ref: deliveryId,
+      },
+    ]);
+  });
+
+  it("rejects an incorrect signature without mutating PostgreSQL", async () => {
+    const body = Buffer.from('{"action":"opened"}', "utf8");
+    const signatureBody = Buffer.from('{"action":"closed"}', "utf8");
+
+    const response = await request(app)
+      .post("/webhooks/github")
+      .set("Content-Type", "application/json")
+      .set("X-Hub-Signature-256", sign(signatureBody))
+      .set("X-GitHub-Delivery", "delivery-incorrect")
+      .send(body.toString("utf8"));
+
+    expect(response.status).toBe(403);
+    expect(response.body).toEqual({
+      error: "Invalid webhook signature",
+    });
+    await expect(readBusinessEvents()).resolves.toEqual([]);
+  });
+
+  it("rejects a missing signature without mutating PostgreSQL", async () => {
+    const body = Buffer.from('{"action":"opened"}', "utf8");
+
+    const response = await request(app)
+      .post("/webhooks/github")
+      .set("Content-Type", "application/json")
+      .set("X-GitHub-Delivery", "delivery-missing")
+      .send(body.toString("utf8"));
+
+    expect(response.status).toBe(403);
+    expect(response.body).toEqual({
+      error: "Invalid webhook signature",
+    });
+    await expect(readBusinessEvents()).resolves.toEqual([]);
+  });
+
+  it("rejects a signature calculated over different bytes", async () => {
+    const body = Buffer.from('{"action":"opened","number":1}', "utf8");
+    const signatureBody = Buffer.from(
+      '{ "action": "opened", "number": 1 }',
+      "utf8",
+    );
+
+    const response = await request(app)
+      .post("/webhooks/github")
+      .set("Content-Type", "application/json")
+      .set("X-Hub-Signature-256", sign(signatureBody))
+      .set("X-GitHub-Delivery", "delivery-different-bytes")
+      .send(body.toString("utf8"));
+
+    expect(response.status).toBe(403);
+    await expect(readBusinessEvents()).resolves.toEqual([]);
+  });
+
+  it("rejects a malformed signature", async () => {
+    const body = Buffer.from('{"action":"opened"}', "utf8");
+
+    const response = await request(app)
+      .post("/webhooks/github")
+      .set("Content-Type", "application/json")
+      .set("X-Hub-Signature-256", "sha256=not-a-digest")
+      .set("X-GitHub-Delivery", "delivery-malformed")
+      .send(body.toString("utf8"));
+
+    expect(response.status).toBe(403);
+    await expect(readBusinessEvents()).resolves.toEqual([]);
+  });
+
+  it("keeps malformed JSON at 400 after authenticating the raw bytes", async () => {
+    const body = Buffer.from('{"action":"opened"', "utf8");
+
+    const response = await request(app)
+      .post("/webhooks/github")
+      .set("Content-Type", "application/json")
+      .set("X-Hub-Signature-256", sign(body))
+      .set("X-GitHub-Delivery", "delivery-malformed-json")
+      .send(body.toString("utf8"));
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({
+      error: "Invalid JSON body",
+    });
+    await expect(readBusinessEvents()).resolves.toEqual([]);
+  });
+
+  it("keeps oversized JSON at 413", async () => {
+    const body = Buffer.from(
+      JSON.stringify({ payload: "x".repeat(101 * 1024) }),
+      "utf8",
+    );
+
+    const response = await request(app)
+      .post("/webhooks/github")
+      .set("Content-Type", "application/json")
+      .set("X-Hub-Signature-256", sign(body))
+      .set("X-GitHub-Delivery", "delivery-oversized")
+      .send(body.toString("utf8"));
+
+    expect(response.status).toBe(413);
+    expect(response.body).toEqual({
+      error: "Request body too large",
+    });
+    await expect(readBusinessEvents()).resolves.toEqual([]);
+  });
+
+  it("requires a delivery ID after authentication", async () => {
+    const body = Buffer.from('{"action":"opened"}', "utf8");
+
+    const response = await request(app)
+      .post("/webhooks/github")
+      .set("Content-Type", "application/json")
+      .set("X-Hub-Signature-256", sign(body))
+      .send(body.toString("utf8"));
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({
+      error: "X-GitHub-Delivery header is required",
+    });
+    await expect(readBusinessEvents()).resolves.toEqual([]);
   });
 });

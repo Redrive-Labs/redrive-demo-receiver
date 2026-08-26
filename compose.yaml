@@ -21,6 +21,7 @@ services:
       context: .
     environment:
       PORT: 3000
+      WEBHOOK_SECRET: github_webhook_dev_secret
       PGHOST: postgres
       PGPORT: 5432
       PGUSER: receiver

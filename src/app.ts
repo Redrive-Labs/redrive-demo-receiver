@@ -5,13 +5,19 @@ import express, {
   type Request,
   type Response,
 } from "express";
+import { config } from "./config";
 import { createEventsRouter } from "./routes/events";
+import { createGithubWebhookRouter } from "./routes/github-webhook";
 import { createHealthRouter } from "./routes/health";
 
 export function createApp(): Express {
   const app = express();
 
   app.disable("x-powered-by");
+  app.use(
+    "/webhooks/github",
+    createGithubWebhookRouter(config.webhookSecret),
+  );
   app.use(express.json({ limit: "100kb" }));
   app.use("/health", createHealthRouter());
   app.use("/events", createEventsRouter());
