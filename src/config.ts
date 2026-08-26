@@ -28,6 +28,8 @@ function readRequired(name: string): string {
 export const config = {
   port: readPort("PORT", 3000),
   webhookSecret: readRequired("WEBHOOK_SECRET"),
+  downstreamUrl:
+    process.env.DOWNSTREAM_URL ?? "http://localhost:4000/notifications",
   database: {
     host: process.env.PGHOST ?? "localhost",
     port: readPort("PGPORT", 5432),

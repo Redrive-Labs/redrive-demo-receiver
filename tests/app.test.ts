@@ -11,6 +11,7 @@ import {
 import { createApp } from "../src/app";
 import { config } from "../src/config";
 import { closeDatabase, pool } from "../src/db";
+import { notifyDownstream } from "../src/services/downstream";
 import { assertTestDatabase } from "./test-database";
 
 const app = createApp();
@@ -167,6 +168,20 @@ describe("POST /events", () => {
     expect(response.body).toEqual({
       error: "Request body too large",
     });
+  });
+});
+
+describe("downstream notifications", () => {
+  it("propagates the real downstream contract rejection", async () => {
+    await expect(
+      notifyDownstream({
+        id: 1,
+        externalRef: "delivery-contract-check",
+        createdAt: new Date(),
+      }),
+    ).rejects.toThrow(
+      'Downstream notification rejected with HTTP 422: {"error":"invalid_notification","message":"deliveryId is required"}',
+    );
   });
 });
 

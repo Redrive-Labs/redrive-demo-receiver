@@ -16,12 +16,33 @@ services:
       retries: 10
       start_period: 5s
 
+  downstream:
+    build:
+      context: ./downstream
+    environment:
+      PORT: 4000
+    ports:
+      - "4000:4000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4000/health').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1))"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
   app:
     build:
       context: .
     environment:
       PORT: 3000
       WEBHOOK_SECRET: github_webhook_dev_secret
+      DOWNSTREAM_URL: http://downstream:4000/notifications
       PGHOST: postgres
       PGPORT: 5432
       PGUSER: receiver
@@ -29,6 +50,8 @@ services:
       PGDATABASE: receiver
     depends_on:
       postgres:
+        condition: service_healthy
+      downstream:
         condition: service_healthy
     ports:
       - "3000:3000"
