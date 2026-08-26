@@ -118,8 +118,9 @@ X-GitHub-Delivery: <delivery ID>
 
 The request body is verified using the exact received bytes before the
 authenticated JSON payload is processed. A valid request records one
-`business_events` row using the delivery ID as its opaque external reference
-and returns HTTP 201.
+`business_events` row using the delivery ID as its opaque external reference,
+then returns HTTP 500 when processing fails after the insert. Replaying the
+same delivery records another row and also returns HTTP 500.
 
 ### Create an event
 

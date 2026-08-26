@@ -38,6 +38,25 @@ async function readBusinessEvents(): Promise<
   return result.rows;
 }
 
+async function readBusinessEventsFor(
+  externalRef: string,
+): Promise<Array<{ id: number; external_ref: string }>> {
+  const result = await pool.query<{
+    id: number;
+    external_ref: string;
+  }>(
+    `
+      SELECT id, external_ref
+      FROM business_events
+      WHERE external_ref = $1
+      ORDER BY id
+    `,
+    [externalRef],
+  );
+
+  return result.rows;
+}
+
 beforeEach(async () => {
   assertTestDatabase(config.database.database);
   await pool.query("TRUNCATE TABLE business_events RESTART IDENTITY");
@@ -152,7 +171,7 @@ describe("POST /events", () => {
 });
 
 describe("POST /webhooks/github", () => {
-  it("persists one event for a correctly signed request", async () => {
+  it("returns 500 after committing one event", async () => {
     const body = Buffer.from(
       '{"action":"opened","repository":{"full_name":"octo/example"}}',
       "utf8",
@@ -166,15 +185,48 @@ describe("POST /webhooks/github", () => {
       .set("X-GitHub-Delivery", deliveryId)
       .send(body.toString("utf8"));
 
-    expect(response.status).toBe(201);
-    expect(response.body).toMatchObject({
-      id: 1,
-      externalRef: deliveryId,
-      createdAt: expect.any(String),
+    expect(response.status).toBe(500);
+    expect(response.body).toEqual({
+      error: "Unable to process webhook",
     });
-    await expect(readBusinessEvents()).resolves.toEqual([
+    await expect(readBusinessEventsFor(deliveryId)).resolves.toEqual([
       {
         id: 1,
+        external_ref: deliveryId,
+      },
+    ]);
+  });
+
+  it("commits another event when the exact delivery is replayed", async () => {
+    const body = Buffer.from('{"action":"opened"}', "utf8");
+    const deliveryId = "delivery-replayed-as-opaque-text-9007199254740993";
+    const signature = sign(body);
+
+    const firstResponse = await request(app)
+      .post("/webhooks/github")
+      .set("Content-Type", "application/json")
+      .set("X-Hub-Signature-256", signature)
+      .set("X-GitHub-Delivery", deliveryId)
+      .send(body.toString("utf8"));
+
+    expect(firstResponse.status).toBe(500);
+    await expect(readBusinessEventsFor(deliveryId)).resolves.toHaveLength(1);
+
+    const replayResponse = await request(app)
+      .post("/webhooks/github")
+      .set("Content-Type", "application/json")
+      .set("X-Hub-Signature-256", signature)
+      .set("X-GitHub-Delivery", deliveryId)
+      .send(body.toString("utf8"));
+
+    expect(replayResponse.status).toBe(500);
+    await expect(readBusinessEventsFor(deliveryId)).resolves.toEqual([
+      {
+        id: 1,
+        external_ref: deliveryId,
+      },
+      {
+        id: 2,
         external_ref: deliveryId,
       },
     ]);

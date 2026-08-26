@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import express, { Router } from "express";
-import { createEvent } from "../services/events";
+import { processGithubWebhook } from "../services/github-webhook";
 
 const JSON_BODY_LIMIT = "100kb";
 
@@ -53,7 +53,7 @@ export function createGithubWebhookRouter(webhookSecret: string): Router {
       }
 
       try {
-        const event = await createEvent(deliveryId);
+        const event = await processGithubWebhook(deliveryId);
 
         response.status(201).json({
           id: event.id,
@@ -61,7 +61,7 @@ export function createGithubWebhookRouter(webhookSecret: string): Router {
           createdAt: event.createdAt,
         });
       } catch (error) {
-        console.error("GitHub webhook event creation failed", error);
+        console.error("GitHub webhook processing failed", error);
         response.status(500).json({
           error: "Unable to process webhook",
         });
