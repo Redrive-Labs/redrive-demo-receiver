@@ -571,4 +571,26 @@ describe("POST /webhooks/github", () => {
     });
     await expect(readBusinessEvents()).resolves.toEqual([]);
   });
+
+  it("rejects correctly signed malformed UTF-8 without mutating PostgreSQL", async () => {
+    const body = Buffer.concat([
+      Buffer.from('{"payload":"', "utf8"),
+      Buffer.from([0x80]),
+      Buffer.from('"}', "utf8"),
+    ]);
+
+    const response = await request(app)
+      .post("/webhooks/github")
+      .set("Content-Type", "application/octet-stream")
+      .set("X-Hub-Signature-256", sign(body))
+      .set("X-GitHub-Delivery", "delivery-malformed-utf8")
+      .send(body);
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({
+      error: "Invalid JSON body",
+    });
+
+    await expect(readBusinessEvents()).resolves.toEqual([]);
+  });
 });
