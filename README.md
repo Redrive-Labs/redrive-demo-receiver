@@ -33,15 +33,18 @@ Copy the example configuration for local, non-Compose commands:
 cp .env.example .env
 ```
 
-The service reads `PORT`, `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, and
-`PGDATABASE`. The example values expect PostgreSQL to be available on the
-local machine at port 5432. The Compose application receives its own
-container-network values from `compose.yaml`.
+The service reads `PORT`, `WEBHOOK_SECRET`, `DOWNSTREAM_URL`, `PGHOST`,
+`PGPORT`, `PGUSER`, `PGPASSWORD`, and `PGDATABASE`. `WEBHOOK_SECRET` must match
+the secret used to sign GitHub webhook requests. `DOWNSTREAM_URL` points to the
+notification service endpoint. The example values expect the downstream
+service to be available on the local machine at port 4000 and PostgreSQL at
+port 5432. The Compose application receives its own container-network values
+from `compose.yaml`.
 
 ## Run with Docker Compose
 
-Compose starts PostgreSQL, waits for its health check, applies migrations, and
-starts the application:
+Compose starts PostgreSQL and the downstream service, waits for their health
+checks, applies migrations, and starts the application:
 
 ```sh
 docker compose up --build
@@ -106,6 +109,24 @@ Returns HTTP 200 and checks PostgreSQL with a lightweight query:
 If PostgreSQL cannot be queried, the endpoint returns HTTP 503 and does not
 report the database as healthy.
 
+### GitHub webhook
+
+```http
+POST /webhooks/github
+Content-Type: application/json
+X-Hub-Signature-256: sha256=<HMAC-SHA256 hex digest>
+X-GitHub-Delivery: <delivery ID>
+```
+
+The request body is verified using the exact received bytes before the
+authenticated JSON payload is processed. A valid request records one
+`business_events` row using the delivery ID as its opaque external reference,
+then sends a notification to the downstream service. The downstream contract
+expects `eventId` and `deliveryId`, while the receiver currently sends
+`eventId` and `externalRef`, so the downstream responds with HTTP 422 and the
+webhook returns HTTP 500. Replaying the same delivery records another row and
+also returns HTTP 500.
+
 ### Create an event
 
 ```http
@@ -133,13 +154,15 @@ Successful requests return HTTP 201 with the persisted event:
 
 ## Validate the project
 
-Run the tests after PostgreSQL is running and migrations have been applied:
+Run the tests after PostgreSQL and the downstream service are running and
+migrations have been applied. Compose publishes PostgreSQL on host port 5434,
+so pass that host connection to both commands:
 
 ```sh
-docker compose up -d postgres
+docker compose up -d postgres downstream
 docker compose exec postgres createdb -U receiver receiver_test
-PGDATABASE=receiver_test npm run db:migrate
-npm test
+PGPORT=5434 PGDATABASE=receiver_test npm run db:migrate
+PGPORT=5434 npm test
 ```
 
 Tests always target the dedicated `receiver_test` database. Their destructive
