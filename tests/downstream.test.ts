@@ -106,6 +106,35 @@ function requestNotification(
   });
 }
 
+function abortNotification(port: number): Promise<void> {
+  const body = Buffer.from(
+    JSON.stringify({ eventId: 1, deliveryId: "opaque-delivery-id" }),
+    "utf8",
+  );
+  const partialBody = body.subarray(0, body.byteLength - 1);
+
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({
+      host: "127.0.0.1",
+      port,
+      path: "/notifications",
+      method: "POST",
+      headers: {
+        host: `127.0.0.1:${port}`,
+        "content-type": "application/json",
+        "content-length": body.byteLength,
+      },
+    });
+    request.once("error", (error) => {
+      if ((error as NodeJS.ErrnoException).code !== "ECONNRESET") {
+        reject(error);
+      }
+    });
+    request.once("close", () => resolve());
+    request.write(partialBody, () => request.destroy());
+  });
+}
+
 async function startDownstream(): Promise<{
   child: ChildProcess;
   port: number;
@@ -202,6 +231,19 @@ describe("downstream server", () => {
           message: "Request body must be 100 KiB or smaller",
         }),
       });
+      await expect(requestHealth(port, `127.0.0.1:${port}`)).resolves.toMatchObject({
+        status: 200,
+      });
+    } finally {
+      await stopChild(child);
+    }
+  });
+
+  it("keeps serving after an aborted notification request", async () => {
+    const { child, port } = await startDownstream();
+
+    try {
+      await abortNotification(port);
       await expect(requestHealth(port, `127.0.0.1:${port}`)).resolves.toMatchObject({
         status: 200,
       });
