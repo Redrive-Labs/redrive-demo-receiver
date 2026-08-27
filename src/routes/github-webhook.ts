@@ -36,7 +36,10 @@ export function createGithubWebhookRouter(webhookSecret: string): Router {
       }
 
       try {
-        request.body = JSON.parse(request.body.toString("utf8"));
+        const decodedBody = new TextDecoder("utf-8", {
+          fatal: true,
+        }).decode(request.body);
+        request.body = JSON.parse(decodedBody);
         next();
       } catch {
         response.status(400).json({
