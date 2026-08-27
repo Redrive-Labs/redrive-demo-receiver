@@ -39,10 +39,19 @@ function readJson(request) {
 }
 
 const server = http.createServer(async (request, response) => {
-  const url = new URL(
-    request.url ?? "/",
-    `http://${request.headers.host ?? "localhost"}`,
-  );
+  let url;
+  try {
+    url = new URL(
+      request.url ?? "/",
+      `http://${request.headers.host ?? "localhost"}`,
+    );
+  } catch {
+    sendJson(response, 400, {
+      error: "invalid_request",
+      message: "Request URL or Host header is invalid",
+    });
+    return;
+  }
 
   if (request.method === "GET" && url.pathname === "/health") {
     sendJson(response, 200, { status: "ok" });

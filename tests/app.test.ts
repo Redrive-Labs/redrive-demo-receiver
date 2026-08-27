@@ -183,6 +183,43 @@ describe("downstream notifications", () => {
       'Downstream notification rejected with HTTP 422: {"error":"invalid_notification","message":"deliveryId is required"}',
     );
   });
+
+  it("aborts a downstream request that does not complete", async () => {
+    const timeoutController = new AbortController();
+    const timeout = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockReturnValue(timeoutController.signal);
+    const fetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation((_input, init) => {
+        const signal = init?.signal;
+        if (signal === undefined || signal === null) {
+          return Promise.reject(new Error("missing abort signal"));
+        }
+
+        return new Promise<Response>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason));
+        });
+      });
+
+    try {
+      const notification = notifyDownstream({
+        id: 1,
+        externalRef: "delivery-timeout-check",
+        createdAt: new Date(),
+      });
+      timeoutController.abort(new Error("downstream request timed out"));
+
+      await expect(notification).rejects.toThrow(
+        "downstream request timed out",
+      );
+      expect(timeout).toHaveBeenCalledWith(5_000);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      fetch.mockRestore();
+      timeout.mockRestore();
+    }
+  });
 });
 
 describe("POST /webhooks/github", () => {

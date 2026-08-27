@@ -155,13 +155,14 @@ Successful requests return HTTP 201 with the persisted event:
 ## Validate the project
 
 Run the tests after PostgreSQL and the downstream service are running and
-migrations have been applied:
+migrations have been applied. Compose publishes PostgreSQL on host port 5434,
+so pass that host connection to both commands:
 
 ```sh
 docker compose up -d postgres downstream
 docker compose exec postgres createdb -U receiver receiver_test
-PGDATABASE=receiver_test npm run db:migrate
-npm test
+PGPORT=5434 PGDATABASE=receiver_test npm run db:migrate
+PGPORT=5434 npm test
 ```
 
 Tests always target the dedicated `receiver_test` database. Their destructive
