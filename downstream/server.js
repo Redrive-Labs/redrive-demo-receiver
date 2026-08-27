@@ -1,6 +1,14 @@
 const http = require("node:http");
 
 const port = Number(process.env.PORT ?? 4000);
+const MAX_BODY_BYTES = 100 * 1024;
+
+class RequestBodyTooLargeError extends Error {
+  constructor() {
+    super("Request body too large");
+    this.name = "RequestBodyTooLargeError";
+  }
+}
 
 function sendJson(response, status, body) {
   const payload = JSON.stringify(body);
@@ -21,20 +29,50 @@ function isRecord(value) {
 
 function readJson(request) {
   return new Promise((resolve, reject) => {
-    let body = "";
+    const chunks = [];
+    let bodyBytes = 0;
+    let settled = false;
 
-    request.setEncoding("utf8");
+    function rejectOnce(error) {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(error);
+    }
+
     request.on("data", (chunk) => {
-      body += chunk;
+      if (settled) {
+        return;
+      }
+
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      bodyBytes += buffer.byteLength;
+      if (bodyBytes > MAX_BODY_BYTES) {
+        rejectOnce(new RequestBodyTooLargeError());
+        request.resume();
+        return;
+      }
+
+      chunks.push(buffer);
     });
     request.on("end", () => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
       try {
+        const body = Buffer.concat(chunks, bodyBytes).toString("utf8");
         resolve(JSON.parse(body));
       } catch (error) {
         reject(error);
       }
     });
-    request.on("error", reject);
+    request.on("error", rejectOnce);
+    request.on("aborted", () => {
+      rejectOnce(new Error("Request body was aborted"));
+    });
   });
 }
 
@@ -78,7 +116,15 @@ const server = http.createServer(async (request, response) => {
   let payload;
   try {
     payload = await readJson(request);
-  } catch {
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      sendJson(response, 413, {
+        error: "request_body_too_large",
+        message: "Request body must be 100 KiB or smaller",
+      });
+      return;
+    }
+
     sendJson(response, 400, {
       error: "invalid_json",
       message: "Request body must be valid JSON",

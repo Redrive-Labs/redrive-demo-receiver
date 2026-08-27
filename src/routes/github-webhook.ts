@@ -9,7 +9,8 @@ export function createGithubWebhookRouter(webhookSecret: string): Router {
 
   router.post(
     "/",
-    express.raw({ type: "*/*", limit: JSON_BODY_LIMIT }),
+    rejectUnsupportedContentEncoding,
+    express.raw({ type: "*/*", limit: JSON_BODY_LIMIT, inflate: false }),
     (request, response, next) => {
       const rawBody = request.body;
       const signature = request.get("X-Hub-Signature-256");
@@ -70,6 +71,26 @@ export function createGithubWebhookRouter(webhookSecret: string): Router {
   );
 
   return router;
+}
+
+function rejectUnsupportedContentEncoding(
+  request: express.Request,
+  response: express.Response,
+  next: express.NextFunction,
+): void {
+  const contentEncoding = request.get("Content-Encoding");
+  if (
+    contentEncoding !== undefined &&
+    contentEncoding.trim().toLowerCase() !== "identity"
+  ) {
+    request.resume();
+    response.status(415).json({
+      error: "Unsupported Content-Encoding",
+    });
+    return;
+  }
+
+  next();
 }
 
 function isValidSignature(

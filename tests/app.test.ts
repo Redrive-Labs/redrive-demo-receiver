@@ -1,4 +1,6 @@
 import { createHmac } from "node:crypto";
+import { request as httpRequest } from "node:http";
+import { gzipSync } from "node:zlib";
 import request from "supertest";
 import {
   afterAll,
@@ -184,6 +186,44 @@ describe("downstream notifications", () => {
     );
   });
 
+  it("bounds a large non-2xx diagnostic to 4096 bytes", async () => {
+    const cancelReasons: unknown[] = [];
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Buffer.from("x".repeat(5_000), "utf8"));
+        controller.enqueue(Buffer.from("tail", "utf8"));
+      },
+      cancel(reason) {
+        cancelReasons.push(reason);
+      },
+    });
+    const fetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(body, { status: 503 }));
+
+    try {
+      let error: unknown;
+      try {
+        await notifyDownstream({
+          id: 1,
+          externalRef: "diagnostic-limit-check",
+          createdAt: new Date(),
+        });
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(error).toBeInstanceOf(Error);
+      const message = (error as Error).message;
+      const prefix = "Downstream notification rejected with HTTP 503: ";
+      expect(message).toBe(`${prefix}${"x".repeat(4_096)}`);
+      expect(message).toHaveLength(prefix.length + 4_096);
+      expect(cancelReasons).toHaveLength(1);
+    } finally {
+      fetch.mockRestore();
+    }
+  });
+
   it("aborts a downstream request that does not complete", async () => {
     const timeoutController = new AbortController();
     const timeout = vi
@@ -247,6 +287,65 @@ describe("POST /webhooks/github", () => {
         external_ref: deliveryId,
       },
     ]);
+  });
+
+  it("maps a downstream timeout to 500 after committing the event", async () => {
+    const body = Buffer.from('{"action":"opened"}', "utf8");
+    const deliveryId = "delivery-timeout-webhook";
+    const timeoutController = new AbortController();
+    const timeout = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockReturnValue(timeoutController.signal);
+    let fetchStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      fetchStarted = resolve;
+    });
+    const fetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation((_input, init) => {
+        const signal = init?.signal;
+        fetchStarted();
+        if (signal === undefined || signal === null) {
+          return Promise.reject(new Error("missing abort signal"));
+        }
+
+        return new Promise<Response>((_resolve, reject) => {
+          if (signal.aborted) {
+            reject(signal.reason);
+            return;
+          }
+          signal.addEventListener("abort", () => reject(signal.reason));
+        });
+      });
+
+    try {
+      const pendingResponse = request(app)
+        .post("/webhooks/github")
+        .set("Content-Type", "application/json")
+        .set("X-Hub-Signature-256", sign(body))
+        .set("X-GitHub-Delivery", deliveryId)
+        .send(body.toString("utf8"));
+      const responsePromise = pendingResponse.then((result) => result);
+
+      await started;
+      timeoutController.abort(new Error("downstream request timed out"));
+      const response = await responsePromise;
+
+      expect(response.status).toBe(500);
+      expect(response.body).toEqual({
+        error: "Unable to process webhook",
+      });
+      expect(timeout).toHaveBeenCalledWith(5_000);
+      await expect(readBusinessEventsFor(deliveryId)).resolves.toEqual([
+        {
+          id: 1,
+          external_ref: deliveryId,
+        },
+      ]);
+    } finally {
+      fetch.mockRestore();
+      timeout.mockRestore();
+    }
   });
 
   it("commits another event when the exact delivery is replayed", async () => {
@@ -316,6 +415,76 @@ describe("POST /webhooks/github", () => {
       error: "Invalid webhook signature",
     });
     await expect(readBusinessEvents()).resolves.toEqual([]);
+  });
+
+  it("rejects gzip webhook bodies before parsing or mutating PostgreSQL", async () => {
+    const body = Buffer.from('{"action":"opened"}', "utf8");
+    const encodedBody = gzipSync(body);
+    const server = createApp().listen(0, "127.0.0.1");
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("listening", () => resolve());
+        server.once("error", (error) => reject(error));
+      });
+
+      const address = server.address();
+      if (address === null || typeof address === "string") {
+        throw new Error("Test server did not expose a TCP address");
+      }
+
+      const response = await new Promise<{
+        statusCode: number | undefined;
+        body: string;
+      }>((resolve, reject) => {
+        const clientRequest = httpRequest(
+          {
+            hostname: "127.0.0.1",
+            port: address.port,
+            path: "/webhooks/github",
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Content-Encoding": "gzip",
+              "Content-Length": encodedBody.length,
+              "X-Hub-Signature-256": sign(encodedBody),
+              "X-GitHub-Delivery": "delivery-encoded",
+              Connection: "close",
+            },
+          },
+          (incomingResponse) => {
+            const chunks: Buffer[] = [];
+            incomingResponse.on("data", (chunk: Buffer) => chunks.push(chunk));
+            incomingResponse.on("end", () =>
+              resolve({
+                statusCode: incomingResponse.statusCode,
+                body: Buffer.concat(chunks).toString("utf8"),
+              }),
+            );
+            incomingResponse.on("error", reject);
+          },
+        );
+
+        clientRequest.on("error", reject);
+        clientRequest.end(encodedBody);
+      });
+
+      expect(response.statusCode).toBe(415);
+      expect(JSON.parse(response.body)).toEqual({
+        error: "Unsupported Content-Encoding",
+      });
+      await expect(readBusinessEvents()).resolves.toEqual([]);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      });
+    }
   });
 
   it("rejects a signature calculated over different bytes", async () => {
